@@ -1,0 +1,546 @@
+<html>
+
+<head>
+<link href="css/ui.dynatree.css" rel="stylesheet" type="text/css">
+<style>
+.code_input,.result_output {
+	border: 1px #c3c3c3;
+	width: 100%;
+	height: 15px;
+	background-color: #ffffff;
+	color: #000000;
+	resize:none;
+}
+
+ul.dynatree-container {
+	height: auto;
+	margin-bottom: 40px;
+}
+.table {display: table;}
+.row {display: table-row;}
+.cell {
+display: table-cell;
+padding:2px 10px ;
+min-width: 60px;
+}
+fieldset {
+	border:0px;
+	padding:0px;
+}
+
+</style>
+</head>
+
+<body>
+	<div id="main_content">
+	<form id="ws_caller">
+		<table dir="ltr" id="input_table">
+			<tr class="row">
+				<td class="cell" width='200px'>Web Service :</td>
+				<td class="cell" style='visibility: collapse;'>&nbsp;</td>
+				<td class="cell"><select id="webservice_select" name="webservice_select" style="width: 380px;"></select></td>
+				<td class="cell" id="webservice_url" >&nbsp;</td>
+			</tr>
+			<tr class="row">
+				<td class="cell" width='200px'>Service :</td>
+				<td class="cell" style='visibility: collapse;'>&nbsp;</td>
+				<td class="cell" ><select id="service_name_select" name="service_name_select" style="width: 380px;"></select></td>
+			</tr>
+		</table>
+		<input id="submit_button" type="submit" value="Execute" />&nbsp;<input id="simulate_button" type="submit" value="Simulate" />
+		<button id="expand_button" type="button" onClick="expandTree();">Expand Tree</button>
+		<button id="toggle_xml_tree_button" type="button" onClick="toggleXMLTree();">Toggle Tree / XML</button>
+	</form>
+	<div id="tree"></div> 
+	<textarea class="code_input" style="width: 100%; height: auto;"
+		id="xml_input" name="xml_input" wrap="soft"></textarea>
+	</div>
+	<div id="loading" style="line-height: 115px; text-align: center;">
+		Please wait ...<br/>
+		<img src='css/ajax-loader.gif' alt='Loading...'/>
+	</div>
+</body>
+
+
+<script src="http://code.jquery.com/jquery-1.9.1.min.js"></script>
+<script type="text/javascript" src="js/jquery-ui-1.10.1.custom.min.js"> </script>
+<script type="text/javascript" src="js/jquery.dynatree.min.js"> </script>
+<script type="text/javascript" src="js/jquery.autosize-min.js"> </script>
+<script type="text/javascript">
+
+var service_name_select_width = 200;
+var service_data = {};
+var ws_methods_list = {};
+var tree_expand_status = false;
+
+
+/**** METHODS FOR THE TREE */
+function get_attributes(a) {
+	if (a == null) return '';
+	res = '';
+	for (var i = 0; i < a.length; i++) {
+		res += a[i].name + '=' + a[i].value;
+		if (i < a.length - 1) res += ';';
+	}
+	return res;
+}
+
+function get_attributes_as_map(a) {
+	if (a == null) return '';
+	var res = new Object();
+	for (var i = 0; i < a.length; i++) {
+		res[a[i].name] = a[i].value;
+	}
+	return res;
+}
+
+function recurse_parse_xml(o, depth) {
+	if (o == null) return null;
+	if (o.nodeValue == 'null' && o.nodeName == '#text') return null;
+	if (o.nodeName  == 'parsererror') return null;
+
+	var result = new Object();
+	if (o.nodeValue == null) {
+		result.title    = o.nodeName;
+		a = get_attributes(o.attributes);
+		if (a.length > 0) {
+			result.title += ", " + a; 
+		}
+	} else {
+		if (o.childNodes.length > 0) {
+			console.error("A LEAF SHOULD NOT HAVE A CHILD !!!");
+		}
+		
+		result.title    = o.nodeValue;
+		a = get_attributes(o.attributes);
+		if (a.length > 0) {
+			result.title += ", " + a;
+		}
+		return result;
+	}
+	
+	if (o.childNodes == null) return result;	
+	result.children = new Array();
+	var j = 0; 
+	for (var i = 0; i < o.childNodes.length; i++) {
+		c = recurse_parse_xml(o.childNodes[i], depth + 1);
+		if (c == null) continue;
+		result.children[j] = c;
+		j++;
+	}
+
+	result.isFolder = j > 0;
+	// TODO : To be removed
+	if (o.nodeName == "COLUMN" && j <= 1) {
+		result.isFolder = false;
+		value = '-- N/A (empty) --';
+		if (j == 1) value = result.children[0].title;
+		delete result.children
+		
+		mAttrs = get_attributes_as_map(o.attributes);
+		result.title = mAttrs['NAME'] + " (" + mAttrs['TYPE'] + ") = " + value; 
+	} else if (o.nodeName == "PBOBJECT") {
+		mAttrs = get_attributes_as_map(o.attributes);
+		result.title = mAttrs['TYPE'];
+	}
+
+	return result;
+}
+
+/** END OF METHODS FOR THE TREE **/
+var all_classes = new Array();
+displayBaseTypeParameter = function(parameter_hierarchy) {
+	var param_title = "";
+	var param_name  = "";
+	var param_class = new Array();
+	for (var i = 0; i < parameter_hierarchy.length; ++i) {
+		if (i === 0) {
+			param_title += parameter_hierarchy[i].name;
+			param_name  += parameter_hierarchy[i].name;
+			param_class.push(parameter_hierarchy[i].name);
+			all_classes.push(parameter_hierarchy[i].name);
+			continue;
+		}
+		
+		if (parameter_hierarchy[i].tuple) {
+			param_title += "<a onclick=\"add_field_for_tuple('" + param_class[param_class.length - 1] + "');\" title='Add an element' href='#'>[]</a>";
+			param_name  += '[]';
+		} else {
+			param_title += '[' + parameter_hierarchy[i].name + ']';
+			param_name  += '[' + parameter_hierarchy[i].name + ']';
+			param_class.push(param_class[param_class.length - 1] + '_' + parameter_hierarchy[i].name);
+			all_classes.push(param_class[param_class.length - 1]);
+		}
+		
+	}
+	
+	var final_properties = parameter_hierarchy[parameter_hierarchy.length - 1];
+	var row = "<tr group='param_group'><td>" + param_title + "</td>"
+	row    += "<td>" + final_properties.type;
+	if (final_properties.nillable) {
+		row += "<input type='checkbox' title='Set null parameter' name='ws___nullify_" + param_name + "' >"
+	} else {
+		row += "<font color='#FF0000'>*</font>";
+	}
+	row    += "</td><td><span class='" + param_class.join(' ') + "'>";
+
+	if (final_properties.type == "boolean") {
+		row += "<select name='" + param_name + "'><option value='true'>True</option><option value='false'>False</option></select>";
+	} else if (final_properties.type == "enumeration") {
+		row += "<select name='" + param_name + "'>"
+		for (var i in final_properties.values) {
+			row += "<option value='" + final_properties.values[i] + "'>" + final_properties.values[i] + "</option>"
+		}
+		row += "</select>";
+	// TODO  : } else if ((final_properties.type == "base64Binary"))
+	} else {
+		row += "<input type='text' name='" + param_name + "' id='" + param_name + "'/>";
+	}
+
+	row += "</span></td></tr>";
+	if (final_properties.type == "dateTime") {
+		// $("#" + param).datepicker({ dateFormat: "yy-mm-ddT00:00:00" });
+	}
+	
+	$('#input_table').append(row);
+	return row;
+}
+
+displayComplexTypeParameter = function(selected_ws, parameter_hierarchy, depth) {
+	depth = depth || 0;
+
+	if (parameter_hierarchy.length > 50 || depth > 10) {
+		console.error("ERROR : Critical recursion threshold reached", parameter_hierarchy.length, depth);
+		return false;
+	}
+
+	var current_param = parameter_hierarchy[parameter_hierarchy.length - 1];
+	if (!(current_param.type in service_data[selected_ws].types)) {
+		// Not a complex type
+		displayBaseTypeParameter(parameter_hierarchy);
+		return true;
+	}
+
+	var parameter_description = service_data[selected_ws].types[current_param.type];
+	if (service_data[selected_ws].types[current_param.type].type === 'enumeration') {
+		var new_param_hierarchy = parameter_hierarchy.slice(0);
+		var param_o = {name : current_param.name};
+		$.extend(param_o, parameter_description);
+		new_param_hierarchy.push(param_o);
+		displayBaseTypeParameter(new_param_hierarchy);
+		return true;
+	}
+
+	// This is a complex type
+	var row = '';
+	for (var element in parameter_description) {
+		var new_param_hierarchy = parameter_hierarchy.slice(0);
+		var param_o = {name : element};
+		$.extend(param_o, parameter_description[element]);
+		new_param_hierarchy.push(param_o);
+		displayComplexTypeParameter(selected_ws, new_param_hierarchy, depth + 1);
+	}
+	return true;
+}
+
+displayServiceParameters = function(selected_ws, selected_service) {
+	all_classes = new Array();
+	if (selected_ws == "" || selected_service == "") return;
+	$("#webservice_url").html("<a href='" + service_data[selected_ws].infos.wsdl + "'>WSDL</a>");
+
+	$("table tr[group='param_group']").remove();
+
+	if (service_data[selected_ws].methods == null) return;
+	data_method = service_data[selected_ws].methods[selected_service]
+	
+	for (param in data_method) {
+		var param_o = {name : param};
+		$.extend(param_o, data_method[param]);
+		displayComplexTypeParameter(selected_ws, [param_o]);
+	}
+
+	var step = Math.round(255 * 255 * 255 / all_classes.length);
+	$.each(all_classes, function(i, elt) {
+		var color_idx = i * step;
+		$('.' + elt).css('border',  '1px solid #' + color_idx.toString(16));
+		$('.' + elt).css('padding', '2px');
+		$('.' + elt).css('margin',  '2px');
+	});
+}
+
+add_field_for_tuple = function(param_id) {
+	$.each($('.' + param_id), function(i, row) {
+		newNode = row.children[0].cloneNode(true);
+		newNode.value = newNode.defaultValue;
+		row.appendChild(newNode);
+	});
+}
+
+$.fn.serializeObject = function() {
+	var json, patterns, push_counters,
+	  _this = this;
+	json = {};
+	push_counters = {};
+	patterns = {
+		validate: /^[a-zA-Z][a-zA-Z0-9_]*(?:\[(?:\d*|[a-zA-Z0-9_]+)\])*$/,
+		key: /[a-zA-Z0-9_]+|(?=\[\])/g,
+		push: /^$/,
+		fixed: /^\d+$/,
+		named: /^[a-zA-Z0-9_]+$/
+	};
+	this.build = function(base, key, value) {
+		base[key] = value;
+		return base;
+	};
+	this.push_counter = function(key) {
+		if (push_counters[key] === void 0) {
+			push_counters[key] = 0;
+		}
+		return push_counters[key]++;
+	};
+	$.each($(this).serializeArray(), function(i, elem) {
+		var k, keys, merge, re, reverse_key;
+		if (!patterns.validate.test(elem.name)) {
+			return;
+		}
+		keys = elem.name.match(patterns.key);
+		merge = elem.value;
+		reverse_key = elem.name;
+		while ((k = keys.pop()) !== void 0) {
+			if (patterns.push.test(k)) {
+				re = new RegExp("\\[" + k + "\\]$");
+				reverse_key = reverse_key.replace(re, '');
+				merge = _this.build([], _this.push_counter(reverse_key), merge);
+			} else if (patterns.fixed.test(k)) {
+				merge = _this.build([], k, merge);
+			} else if (patterns.named.test(k)) {
+				merge = _this.build({}, k, merge);
+			}
+		}
+		return json = $.extend(true, json, merge);
+	});
+	
+	// Filter out null values
+	var elements_to_remove = Array();
+	for (var elt in json) {
+		if (elt.indexOf("ws___nullify_") !== 0) {
+			continue;
+		}
+		
+		if( Object.prototype.toString.call(json[elt]) === '[object Array]' ) {
+			elements_to_remove.push(elt.substring("ws___nullify_".length));
+		} else {
+			elements_to_remove.push(json[elt]);
+		}
+		delete json[elt]
+	}
+	
+	for (var i = 0; i < elements_to_remove.length; ++i) {
+		if (typeof elements_to_remove[i] === 'string') {
+			delete json[elements_to_remove[i]];
+		}
+	}
+	return json;
+};
+
+fillServiceNameSelectAndGetFirstMethod = function(ws) {
+	var first_method = null;
+	for (i in ws_methods_list[ws]) {
+		method = ws_methods_list[ws][i];
+		if (first_method == null) {
+			first_method = method;
+		}
+		$('#service_name_select').append( "<option group='service_group' value='" + method + "'>" + method + "</option>");
+	}
+	
+	if (first_method == null) {
+		$('#service_name_select').append( "<option group='service_group' value='null'>- Service not available -</option>");
+		$("#submit_button").prop('disabled', true);
+	} else {
+		$("#submit_button").prop('disabled', false);
+	}
+	
+	return first_method;
+}
+
+var expandTree = function() {
+	tree_expand_status = !tree_expand_status;
+	$("#tree").dynatree("getRoot").visit(function(node){
+	    node.expand(tree_expand_status);
+	});
+}
+
+var toggleXMLTree = function() {
+	$("#tree").toggle('slow');
+	$("#xml_input").toggle('slow');
+}
+
+var setXMLTextArea = function(value) {
+	$('#xml_input').show();
+	$('#xml_input').val(value).trigger('autosize');
+}
+
+$(document).ready(
+function () {
+	// Hide while loading
+	$('#main_content').hide();
+	$('#loading').show();
+	$.get("get_all_services",
+	function(data){
+		// Store globally
+		service_data = data;
+		ws_list = Array();
+		var i = 0;
+		for (ws in data) {
+			ws_list[i++] = ws;
+		}
+		ws_list.sort();
+		
+		var first_ws = null;
+		for (ws_idx in ws_list) {
+			ws = ws_list[ws_idx];
+			if (first_ws == null) {
+				first_ws = ws;
+			}
+			
+			ws_methods_list[ws] = Array();
+			var i = 0;
+			for (method in data[ws].methods) {
+				ws_methods_list[ws][i] = method;
+				i++;
+			}
+			ws_methods_list[ws].sort();
+			
+			$('#webservice_select').append( "<option value='" + ws + "'>" + ws + "</option>");
+		}
+		
+		var first_method = fillServiceNameSelectAndGetFirstMethod(first_ws);
+
+		if (first_ws != null && first_method != null) {
+			displayServiceParameters(first_ws, first_method);
+		}
+		$('#loading').hide();
+		$('#main_content').show();
+	}, "json");
+	
+	var changeServiceHandler = function() {
+		$("#service_name_select").prop('disabled', true);
+		$("#webservice_select").prop('disabled', true);
+		
+		var selected_ws = null;
+		$("#webservice_select option:selected").each(function () {
+			selected_ws = $(this).text();
+		});
+
+		var selected_service = null;
+		$("#service_name_select option:selected").each(function () {
+			selected_service = $(this).text();
+		});
+		
+		if (selected_ws != null && selected_service != null) {
+			displayServiceParameters(selected_ws, selected_service);
+		}
+
+		$("#webservice_select").prop('disabled', false);
+		$("#service_name_select").prop('disabled', false);
+	}
+	
+	var changeWSHandler = function() {
+		$("#service_name_select").prop('disabled', true);
+		$("#webservice_select").prop('disabled', true);
+		
+		var selected_ws = null;
+		$("#webservice_select option:selected").each(function () {
+			selected_ws = $(this).text();
+		});
+
+		if (selected_ws != null) {
+			$("#service_name_select [group='service_group']").remove();
+			var first_method = fillServiceNameSelectAndGetFirstMethod(selected_ws);
+			displayServiceParameters(selected_ws, first_method);
+		}
+
+		$("#webservice_select").prop('disabled', false);
+		$("#service_name_select").prop('disabled', false);
+	}
+	
+	$('#webservice_select').change(changeWSHandler).keyup(changeWSHandler).focus();
+	$('#service_name_select').change(changeServiceHandler).keyup(changeServiceHandler);
+	$('#tree').hide();
+	$('#expand_button').hide();
+	$('#toggle_xml_tree_button').hide();
+
+	$('#xml_input').autosize(function(){
+         $.colorbox.resize();
+    });
+
+	$("#ws_caller").submit(function() { return false; });
+	$("#submit_button, #simulate_button").click(
+		function(event) {
+			$('#tree').hide("slow");
+			$('#expand_button').hide();
+			$('#toggle_xml_tree_button').hide();
+			setXMLTextArea('Please wait while request is beeing processed...');
+			var form_data = $("#ws_caller").serializeObject();
+			form_data['__request_type'] = $(this).attr("id");
+			console.log(JSON.stringify(form_data));
+			$.ajax(
+			{
+				url:  "call_ws",
+				type: 'post',
+				data: JSON.stringify(form_data),
+				success: function(data, textStatus, jqXHR) {
+					if (data === null) {
+						setXMLTextArea(jqXHR.responseText);
+						return;
+					}
+					if (   data.activeElement != null
+						&& data.activeElement.nodeName == "parsererror") {
+						setXMLTextArea(jqXHR.responseText);
+						return;
+					}
+					
+					r = recurse_parse_xml(data, 0);
+					if (r == null) {
+						setXMLTextArea(new XMLSerializer().serializeToString(data));
+						return;
+					}
+					$("#tree").dynatree({
+						children: r.children,
+						fx:{ height: "toggle", duration: 200 },
+						debugLevel: 0
+					});
+					
+					tree = $('#tree').dynatree("getTree");
+					if (tree != null && tree.reload != null) {
+						tree.reload();
+						tree.redraw();
+					}
+					
+					tree_expand_status = false;
+					setXMLTextArea(new XMLSerializer().serializeToString(data));
+					$('#xml_input').hide("slow");
+					$('#tree').show();
+					$('#expand_button').show();
+					$('#toggle_xml_tree_button').show();
+				},
+				error: function(jqXHR, textStatus, errorThrown) {
+					if (jqXHR.status == 200) {
+						setXMLTextArea(jqXHR.responseText);
+					} else {
+						t =  'An error occured on server side. Response code : ' + jqXHR.status + '\n';
+						t += '---------------------------------------------------------------------\n';
+						t += 'Response text : "' + jqXHR.statusText + '" \n'; 
+						setXMLTextArea(t);
+					}
+				},
+				dataType:"xml"
+				}
+			);
+  			return false;
+		}
+	);
+});
+</script>
+
+</html>
